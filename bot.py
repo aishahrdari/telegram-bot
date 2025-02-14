@@ -3,11 +3,14 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 import random
 import time
 import re
-
-# This is a new comment to make changes
+import pandas as pd
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 # توکن ربات تلگرام
-TOKEN = '7685970229:AAFhtHZqdQCpgkt7LDLij-vYJrMLyImGw5c'
+TOKEN = '7685970229:AAE8pUQxIR7_zT61UpR_SF6o7Q_SS8VwXHc'
 
 # آیدی گروه تلگرامی
 GROUP_ID = 7168209179  # آیدی عددی گروه
@@ -15,6 +18,11 @@ GROUP_ID = 7168209179  # آیدی عددی گروه
 # دیکشنری برای ذخیره اطلاعات کاربران
 user_data = {}
 cooldown_users = {}
+
+# ایمیل برای ارسال گزارشات
+SENDER_EMAIL = "your_email@gmail.com"
+RECEIVER_EMAIL = "shahrdarimashhad207@gmail.com"
+EMAIL_PASSWORD = "your_email_password"
 
 # مراحل گفتگو
 SELECT_CATEGORY, GET_IMAGE, GET_LOCATION, GET_DESCRIPTION, GET_NAME, GET_CONTACT, CONFIRM_REPORT = range(7)
@@ -120,31 +128,41 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("آیا درخواست دیگری دارید؟", reply_markup=reply_markup)
     return CONFIRM_REPORT
 
-# تأیید گزارش و ارسال به گروه تلگرام
+# تأیید گزارش و ارسال به ایمیل
 async def confirm_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     response = update.message.text
 
     if response == "بله":
-        await start(update, context)
-        return SELECT_CATEGORY
+        if chat_id in cooldown_users and time.time() - cooldown_users[chat_id] < 300:
+            await update.message.reply_text("شما به تازگی گزارش داده‌اید. لطفاً 5 دقیقه دیگر مجدد تلاش کنید.")
+            return ConversationHandler.END
+        else:
+            await start(update, context)
+            return SELECT_CATEGORY
 
     elif response == "خیر":
         report_code = random.randint(10000, 99999)
         user_data[chat_id]['report_code'] = report_code
 
-        report_message = (
-            f"📌 **گزارش جدید ثبت شد**\n\n"
-            f"✅ دسته‌بندی: {user_data[chat_id]['category']}\n"
-            f"📍 موقعیت: {user_data[chat_id]['location']}\n"
-            f"📝 توضیحات: {user_data[chat_id]['description']}\n"
-            f"👤 نام: {user_data[chat_id]['name']}\n"
-            f"📞 شماره تماس: {user_data[chat_id]['contact']}\n"
-            f"🔢 **کد پیگیری:** {report_code}"
-        )
+        # ایجاد DataFrame برای ذخیره اطلاعات
+        report_data = {
+            'Category': user_data[chat_id]['category'],
+            'Location': user_data[chat_id]['location'],
+            'Description': user_data[chat_id]['description'],
+            'Name': user_data[chat_id]['name'],
+            'Contact': user_data[chat_id]['contact'],
+            'Report Code': report_code
+        }
 
-        # ارسال گزارش به گروه تلگرام
-        await context.bot.send_message(GROUP_ID, report_message)
+        df = pd.DataFrame([report_data])
+
+        # ذخیره فایل اکسل
+        file_name = f"report_{report_code}.xlsx"
+        df.to_excel(file_name, index=False)
+
+        # ارسال فایل اکسل به ایمیل
+        send_email(file_name)
 
         # ارسال پیام تایید به کاربر
         await update.message.reply_text(
@@ -155,25 +173,31 @@ async def confirm_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cooldown_users[chat_id] = time.time()
         return ConversationHandler.END
 
+# ارسال ایمیل با فایل اکسل
+def send_email(file_name):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = RECEIVER_EMAIL
+        msg['Subject'] = "گزارش جدید ثبت شده"
+
+        part = MIMEBase('application', "octet-stream")
+        part.set_payload(open(file_name, "rb").read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f"attachment; filename={file_name}")
+        msg.attach(part)
+
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(SENDER_EMAIL, EMAIL_PASSWORD)
+        server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+        server.quit()
+
+    except Exception as e:
+        print(f"Error: {e}")
+
 # راه‌اندازی ربات
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
-        states={
-            SELECT_CATEGORY: [MessageHandler(filters.TEXT, select_category)],
-            GET_IMAGE: [MessageHandler(filters.PHOTO | filters.VIDEO, get_image)],
-            GET_LOCATION: [
-                MessageHandler(filters.LOCATION, get_location),
-                MessageHandler(filters.TEXT, get_location)
-            ],
-            GET_DESCRIPTION: [MessageHandler(filters.TEXT, get_description)],
-            GET_NAME: [MessageHandler(filters.TEXT, get_name)],
-            GET_CONTACT: [MessageHandler(filters.TEXT, get_contact)],
-            CONFIRM_REPORT: [MessageHandler(filters.TEXT, confirm_report)],
-        },
-        fallbacks=[]
-    )
-    app.add_handler(conv_handler)
-    app.run_polling()
+   
